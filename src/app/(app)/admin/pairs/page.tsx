@@ -3,12 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 
-type WeeklyCycle = {
-  id: number
-  week_start_date: string
-  week_end_date: string
-  status: 'planned'|'active'|'archived'
-}
+type WeeklyCycle = { id: number; week_start_date: string; week_end_date: string; status: 'planned'|'active'|'archived' }
 type Profile = { id: string; full_name: string | null; email: string | null; role: 'admin'|'member' }
 type Pair = { id: number }
 
@@ -30,18 +25,25 @@ export default function AdminPairs() {
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
-  const [selA, setSelA] = useState<string>('')  // manual pairing
+  // Manual range state
+  const [startDate, setStartDate] = useState<string>('')
+  const [endDate, setEndDate] = useState<string>('')
+
+  // Manual pairing selects
+  const [selA, setSelA] = useState<string>('')  
   const [selB, setSelB] = useState<string>('')
 
   const load = async () => {
     setLoading(true); setErr(null); setMsg(null)
-    // active week
-    const { data: w, error: we } = await supabase
-      .from('weekly_cycles').select('*').eq('status','active').maybeSingle()
-    if (we) setErr(we.message)
-    setWeek(w as any)
 
-    // current pairs
+    const [{ data: w, error: we }, { data: ms, error: me }] = await Promise.all([
+      supabase.from('weekly_cycles').select('*').eq('status', 'active').maybeSingle(),
+      supabase.from('profiles').select('id, full_name, email, role').eq('role','member').order('created_at')
+    ])
+    if (we) setErr(we.message)
+    if (me) setErr(me.message)
+
+    setWeek(w as any)
     if (w) {
       const { data: ps, error: pe } = await supabase
         .from('pairs').select('id').eq('weekly_cycle_id', (w as any).id).order('id')
@@ -50,41 +52,31 @@ export default function AdminPairs() {
     } else {
       setPairs([])
     }
-
-    // all members (non-admin)
-    const { data: ms, error: me } = await supabase
-      .from('profiles').select('id, full_name, email, role').eq('role','member').order('created_at')
-    if (me) setErr(me.message)
     setMembers(ms || [])
-
     setLoading(false)
   }
   useEffect(() => { load() }, [])
 
-  // fetch pair members for display
   useEffect(() => {
     const run = async () => {
       if (!pairs.length) { setPairMembers({}); return }
-      const result: Record<number, Profile[]> = {}
+      const res: Record<number, Profile[]> = {}
       for (const p of pairs) {
-        const { data: rows, error } = await supabase
-          .from('pair_members').select('user_id').eq('pair_id', p.id)
+        const { data: rows, error } = await supabase.from('pair_members').select('user_id').eq('pair_id', p.id)
         if (error) { setErr(error.message); continue }
         const ids = (rows||[]).map(r => r.user_id)
         if (ids.length) {
-          const { data: profs, error: pe } = await supabase
-            .from('profiles').select('id, full_name, email, role').in('id', ids)
+          const { data: profs, error: pe } = await supabase.from('profiles').select('id, full_name, email, role').in('id', ids)
           if (pe) { setErr(pe.message); continue }
-          result[p.id] = profs || []
-        } else result[p.id] = []
+          res[p.id] = profs || []
+        } else res[p.id] = []
       }
-      setPairMembers(result)
+      setPairMembers(res)
     }
     run()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pairs.length])
 
-  // who is still unpaired?
   const unpaired = useMemo(() => {
     const pairedIds = new Set<string>()
     Object.values(pairMembers).forEach(list => list.forEach(p => pairedIds.add(p.id)))
@@ -93,106 +85,80 @@ export default function AdminPairs() {
 
   const unpairedCount = unpaired.length
 
-  // ---------- actions ----------
+  // ---- Actions ----
   const autoPair = async () => {
     if (!week) return
     setBusy(true); setErr(null); setMsg(null)
     try {
-      // Clear existing pairs for this week
-      const { error: delErr } = await supabase.from('pairs').delete().eq('weekly_cycle_id', week.id)
-      if (delErr) throw delErr
-
+      await supabase.from('pairs').delete().eq('weekly_cycle_id', week.id)
       const pool = [...members.map(m => m.id)]
-      // shuffle
       for (let i = pool.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1))
-        ;[pool[i], pool[j]] = [pool[j], pool[i]]
+        const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]
       }
-      // create
       for (let i = 0; i + 1 < pool.length; i += 2) {
-        const { data: pair, error: pe } = await supabase
-          .from('pairs').insert({ weekly_cycle_id: week.id }).select('id').single()
+        const { data: pair, error: pe } = await supabase.from('pairs').insert({ weekly_cycle_id: week.id }).select('id').single()
         if (pe) throw pe
         const a = pool[i], b = pool[i+1]
-        const { error: pm1 } = await supabase.from('pair_members').insert({ pair_id: (pair as any).id, user_id: a })
+        const id = (pair as any).id
+        const { error: pm1 } = await supabase.from('pair_members').insert({ pair_id: id, user_id: a })
         if (pm1) throw pm1
-        const { error: pm2 } = await supabase.from('pair_members').insert({ pair_id: (pair as any).id, user_id: b })
+        const { error: pm2 } = await supabase.from('pair_members').insert({ pair_id: id, user_id: b })
         if (pm2) throw pm2
       }
-      setMsg('Auto-pairing complete.')
-      await load()
-    } catch (e: any) { setErr(e.message ?? 'Auto-pairing failed') }
+      setMsg('Auto-pairing complete.'); await load()
+    } catch (e: any) { setErr(e.message ?? 'Auto-pair failed') }
     finally { setBusy(false) }
   }
 
   const manualPair = async () => {
     if (!week) return
-    if (!selA || !selB || selA === selB) {
-      setErr('Pick two different unpaired members.'); return
-    }
+    if (!selA || !selB || selA === selB) return setErr('Pick two different unpaired members.')
     setBusy(true); setErr(null); setMsg(null)
     try {
-      const { data: pair, error } = await supabase
-        .from('pairs').insert({ weekly_cycle_id: week.id }).select('id').single()
+      const { data: pair, error } = await supabase.from('pairs').insert({ weekly_cycle_id: week.id }).select('id').single()
       if (error) throw error
-      const id = (pair as any).id as number
+      const id = (pair as any).id
       const { error: e1 } = await supabase.from('pair_members').insert({ pair_id: id, user_id: selA })
       if (e1) throw e1
       const { error: e2 } = await supabase.from('pair_members').insert({ pair_id: id, user_id: selB })
       if (e2) throw e2
-      setSelA(''); setSelB('')
-      setMsg('Manual pair created.')
-      await load()
+      setSelA(''); setSelB(''); setMsg('Manual pair created.'); await load()
     } catch (e: any) { setErr(e.message ?? 'Manual pair failed') }
     finally { setBusy(false) }
   }
 
   const removePair = async (pairId: number) => {
     setBusy(true); setErr(null); setMsg(null)
-    try {
+    try { 
       const { error } = await supabase.from('pairs').delete().eq('id', pairId)
       if (error) throw error
-      setMsg(`Removed pair #${pairId}.`)
-      await load()
-    } catch (e: any) { setErr(e.message ?? 'Failed to remove pair') }
+      setMsg(`Removed pair #${pairId}.`); await load()
+    } catch (e: any) { setErr(e.message ?? 'Remove pair failed') }
     finally { setBusy(false) }
   }
 
-  // Reset THIS week to current Mon..Sun and clear pairs
   const resetWeekToCurrent = async () => {
     setBusy(true); setErr(null); setMsg(null)
     try {
-      // compute current Mon..Sun
-      const now = new Date()
-      const day = now.getDay() // 0 Sun..6 Sat
-      const daysSinceMon = (day + 6) % 7
-      const mon = new Date(now); mon.setDate(now.getDate() - daysSinceMon)
+      const now = new Date(), day = now.getDay(), sinceMon = (day + 6) % 7
+      const mon = new Date(now); mon.setDate(now.getDate() - sinceMon)
       const sun = new Date(mon); sun.setDate(mon.getDate() + 6)
-      const toISO = (d: Date) => d.toISOString().slice(0,10)
+      const iso = (d: Date) => d.toISOString().slice(0,10)
 
       if (week) {
-        // update current active week to current Mon..Sun
-        const { error: upErr } = await supabase
-          .from('weekly_cycles')
-          .update({ week_start_date: toISO(mon), week_end_date: toISO(sun), status: 'active' })
+        const { error: up } = await supabase.from('weekly_cycles')
+          .update({ week_start_date: iso(mon), week_end_date: iso(sun), status: 'active' })
           .eq('id', week.id)
-        if (upErr) throw upErr
-
-        // clear existing pairs for this week
-        const { error: delErr } = await supabase.from('pairs').delete().eq('weekly_cycle_id', week.id)
-        if (delErr) throw delErr
+        if (up) throw up
+        await supabase.from('pairs').delete().eq('weekly_cycle_id', week.id)
       } else {
-        // if no active week, create one
-        const { data: newWeek, error: insErr } = await supabase
-          .from('weekly_cycles')
-          .insert({ week_start_date: toISO(mon), week_end_date: toISO(sun), status: 'active' })
+        const { data: w, error: ins } = await supabase.from('weekly_cycles')
+          .insert({ week_start_date: iso(mon), week_end_date: iso(sun), status: 'active' })
           .select('*').single()
-        if (insErr) throw insErr
-        setWeek(newWeek as any)
+        if (ins) throw ins
+        setWeek(w as any)
       }
-
-      setPairs([]); setPairMembers({})
-      setMsg('Week reset to current Mon–Sun. Now you can pair members.')
+      setPairs([]); setPairMembers({}); setMsg('Week reset to current Mon–Sun.')
     } catch (e: any) { setErr(e.message ?? 'Week reset failed') }
     finally { setBusy(false) }
   }
@@ -201,28 +167,43 @@ export default function AdminPairs() {
     setBusy(true); setErr(null); setMsg(null)
     try {
       if (week) {
-        const { error: upErr } = await supabase.from('weekly_cycles')
-          .update({ status: 'archived' }).eq('id', week.id)
-        if (upErr) throw upErr
+        const { error } = await supabase.from('weekly_cycles').update({ status: 'archived' }).eq('id', week.id)
+        if (error) throw error
       }
-      // next Mon..Sun
-      const now = new Date()
-      const day = now.getDay()
-      const daysSinceMon = (day + 6) % 7
-      const nextMon = new Date(now); nextMon.setDate(now.getDate() - daysSinceMon + 7)
+      const now = new Date(), day = now.getDay(), sinceMon = (day + 6) % 7
+      const nextMon = new Date(now); nextMon.setDate(now.getDate() - sinceMon + 7)
       const nextSun = new Date(nextMon); nextSun.setDate(nextMon.getDate() + 6)
-      const toISO = (d: Date) => d.toISOString().slice(0,10)
-
-      const { data: newWeek, error: insErr } = await supabase
-        .from('weekly_cycles')
-        .insert({ week_start_date: toISO(nextMon), week_end_date: toISO(nextSun), status: 'active' })
+      const iso = (d: Date) => d.toISOString().slice(0,10)
+      const { data: w, error: ins } = await supabase.from('weekly_cycles')
+        .insert({ week_start_date: iso(nextMon), week_end_date: iso(nextSun), status: 'active' })
         .select('*').single()
-      if (insErr) throw insErr
+      if (ins) throw ins
+      setWeek(w as any); setPairs([]); setPairMembers({}); setMsg('Started new week. Pair members now.')
+    } catch (e: any) { setErr(e.message ?? 'Start new week failed') }
+    finally { setBusy(false) }
+  }
 
-      setWeek(newWeek as any)
+  const setManualWeek = async () => {
+    if (!startDate || !endDate) return setErr('Pick both start and end dates.')
+    if (startDate > endDate) return setErr('Start date must be before end date.')
+    setBusy(true); setErr(null); setMsg(null)
+    try {
+      if (week) {
+        const { error } = await supabase.from('weekly_cycles')
+          .update({ week_start_date: startDate, week_end_date: endDate, status: 'active' })
+          .eq('id', week.id)
+        if (error) throw error
+        await supabase.from('pairs').delete().eq('weekly_cycle_id', week.id) // clear existing pairs
+      } else {
+        const { data: w, error } = await supabase.from('weekly_cycles')
+          .insert({ week_start_date: startDate, week_end_date: endDate, status: 'active' })
+          .select('*').single()
+        if (error) throw error
+        setWeek(w as any)
+      }
       setPairs([]); setPairMembers({})
-      setMsg('Started new week. Now click Auto-Pair or use Manual Pair.')
-    } catch (e: any) { setErr(e.message ?? 'Failed to start new week') }
+      setMsg('Active week set to custom range. Pair members now.')
+    } catch (e: any) { setErr(e.message ?? 'Manual week update failed') }
     finally { setBusy(false) }
   }
 
@@ -238,24 +219,38 @@ export default function AdminPairs() {
         </div>
       )}
 
+      {/* Week controls */}
       <div className="card p-4 space-y-3">
-        <div className="text-gray-700">
-          <span className="font-medium">Active week:</span> {formatRange(week)}
-        </div>
+        <div className="text-gray-700"><span className="font-medium">Active week:</span> {formatRange(week)}</div>
         <div className="flex flex-wrap gap-2">
-          <button onClick={autoPair} disabled={!week || busy}
-                  className="rounded-xl px-3 py-2 bg-gray-900 text-white disabled:opacity-50">
+          <button onClick={autoPair} disabled={!week || busy} className="rounded-xl px-3 py-2 bg-gray-900 text-white disabled:opacity-50">
             {busy ? 'Working…' : 'Auto-Pair Members'}
           </button>
-          <button onClick={startNewWeek} disabled={busy}
-                  className="rounded-xl px-3 py-2 bg-white border">
+          <button onClick={startNewWeek} disabled={busy} className="rounded-xl px-3 py-2 bg-white border">
             {busy ? 'Working…' : 'Start New Week (archive current)'}
           </button>
-          <button onClick={resetWeekToCurrent} disabled={busy}
-                  className="rounded-xl px-3 py-2 bg-white border">
+          <button onClick={resetWeekToCurrent} disabled={busy} className="rounded-xl px-3 py-2 bg-white border">
             {busy ? 'Working…' : 'Reset to Current Week (clear pairs)'}
           </button>
         </div>
+
+        {/* Manual range */}
+        <div className="mt-2 grid sm:grid-cols-3 gap-3">
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">Start date</label>
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="w-full rounded-xl border px-3 py-2 bg-white"/>
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">End date</label>
+            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="w-full rounded-xl border px-3 py-2 bg-white"/>
+          </div>
+          <div className="sm:pt-6">
+            <button onClick={setManualWeek} disabled={busy} className="w-full rounded-xl px-3 py-2 bg-white border">
+              {busy ? 'Working…' : 'Set Active Week (manual)'}
+            </button>
+          </div>
+        </div>
+
         {unpairedCount > 0 && (
           <p className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-2">
             Heads up: {unpairedCount} member(s) not paired this week.
@@ -263,28 +258,26 @@ export default function AdminPairs() {
         )}
       </div>
 
+      {/* Manual pairing */}
       <div className="card p-4 space-y-3">
         <h2 className="font-medium">Manual Pair</h2>
         <div className="grid md:grid-cols-3 gap-3 items-end">
           <div>
             <label className="block text-sm text-gray-600 mb-1">Member A (unpaired)</label>
-            <select value={selA} onChange={e => setSelA(e.target.value)}
-                    className="w-full rounded-xl border px-3 py-2 bg-white">
+            <select value={selA} onChange={e => setSelA(e.target.value)} className="w-full rounded-xl border px-3 py-2 bg-white">
               <option value="">— pick —</option>
               {unpaired.map(m => <option value={m.id} key={m.id}>{m.full_name || m.email}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-sm text-gray-600 mb-1">Member B (unpaired)</label>
-            <select value={selB} onChange={e => setSelB(e.target.value)}
-                    className="w-full rounded-xl border px-3 py-2 bg-white">
+            <select value={selB} onChange={e => setSelB(e.target.value)} className="w-full rounded-xl border px-3 py-2 bg-white">
               <option value="">— pick —</option>
               {unpaired.map(m => <option value={m.id} key={m.id}>{m.full_name || m.email}</option>)}
             </select>
           </div>
           <div className="md:pt-6">
-            <button onClick={manualPair} disabled={!week || busy || !selA || !selB || selA===selB}
-                    className="rounded-xl px-3 py-2 bg-gray-900 text-white disabled:opacity-50 w-full">
+            <button onClick={manualPair} disabled={!week || busy || !selA || !selB || selA===selB} className="rounded-xl px-3 py-2 bg-gray-900 text-white disabled:opacity-50 w-full">
               Create Pair
             </button>
           </div>
@@ -292,6 +285,7 @@ export default function AdminPairs() {
         <p className="text-xs text-gray-500">Only unpaired members show here. Remove a pair below to free them up.</p>
       </div>
 
+      {/* Current pairs */}
       <div className="card p-4">
         <h2 className="font-medium mb-2">Current Pairs</h2>
         {pairs.length === 0 && <p className="text-gray-500">No pairs yet for this week.</p>}
@@ -309,8 +303,7 @@ export default function AdminPairs() {
                   )}
                 </ul>
               </div>
-              <button onClick={() => removePair(p.id)}
-                      className="rounded-lg px-2.5 py-1.5 text-sm border hover:bg-gray-50">
+              <button onClick={() => removePair(p.id)} className="rounded-lg px-2.5 py-1.5 text-sm border hover:bg-gray-50">
                 Remove
               </button>
             </div>

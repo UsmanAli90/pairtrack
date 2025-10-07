@@ -22,3 +22,5 @@ html, body {
 
 .card { @apply rounded-2xl border bg-white; }
 
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
