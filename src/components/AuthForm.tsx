@@ -16,7 +16,10 @@ const schema = z.object({
 })
 type FormValues = z.infer<typeof schema>
 
-// 👇 add prop defaultMode
+const toMessage = (err: unknown) =>
+  err instanceof Error ? err.message : typeof err === 'string' ? err : 'Something went wrong'
+
+// 👇 supports /login and /signup pages
 export default function AuthForm({ defaultMode = 'login' }: { defaultMode?: 'login' | 'signup' }) {
   const router = useRouter()
   const [submitting, setSubmitting] = useState(false)
@@ -24,10 +27,13 @@ export default function AuthForm({ defaultMode = 'login' }: { defaultMode?: 'log
 
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { mode: defaultMode }   // 👈 use the prop here
+    defaultValues: { mode: defaultMode }
   })
 
   const mode = watch('mode')
+  const siteUrl =
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000')
 
   const switchMode = (next: 'login' | 'signup') => {
     setInfo(null)
@@ -42,7 +48,10 @@ export default function AuthForm({ defaultMode = 'login' }: { defaultMode?: 'log
         const { data, error } = await supabase.auth.signUp({
           email: values.email,
           password: values.password,
-          options: { data: { full_name: values.fullName || '' } }
+          options: {
+            data: { full_name: values.fullName || '' },
+            emailRedirectTo: `${siteUrl}/auth/callback`,
+          }
         })
         if (error) throw error
         if (data.session) {
@@ -59,10 +68,31 @@ export default function AuthForm({ defaultMode = 'login' }: { defaultMode?: 'log
         if (error) throw error
         router.push('/dashboard')
       }
-    } catch (e: any) {
-      alert(e.message ?? 'Auth failed')
+    } catch (err: unknown) {
+      const msg = toMessage(err).toLowerCase()
+      if (msg.includes('confirm')) {
+        setInfo('Please confirm your email, then log in (or turn off confirmation in Supabase for dev).')
+      } else {
+        alert(toMessage(err))
+      }
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const resend = async () => {
+    try {
+      const email = watch('email')
+      if (!email) { alert('Enter your email first.'); return }
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email,
+        options: { emailRedirectTo: `${siteUrl}/auth/callback` }
+      })
+      if (error) throw error
+      setInfo('Confirmation email re-sent. Check your inbox/spam.')
+    } catch (err: unknown) {
+      alert(toMessage(err))
     }
   }
 
@@ -138,7 +168,6 @@ export default function AuthForm({ defaultMode = 'login' }: { defaultMode?: 'log
 
         {info && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-xl p-2 mt-2">{info}</p>}
 
-        {/* tiny links to alternate page */}
         <p className="text-xs text-gray-500 text-center mt-2">
           {mode === 'signup' ? (
             <>Already have an account? <Link href="/login" className="underline">Log in</Link></>
@@ -146,6 +175,12 @@ export default function AuthForm({ defaultMode = 'login' }: { defaultMode?: 'log
             <>New here? <Link href="/signup" className="underline">Create an account</Link></>
           )}
         </p>
+
+        {mode === 'login' && (
+          <p className="text-xs text-gray-500 text-center mt-1">
+            Didn’t get the email? <button type="button" onClick={resend} className="underline">Resend confirmation</button>
+          </p>
+        )}
       </form>
     </div>
   )

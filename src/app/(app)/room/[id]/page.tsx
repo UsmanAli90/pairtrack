@@ -4,17 +4,42 @@ import { useEffect, useMemo, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 
-type Profile = { id: string; full_name: string | null; email: string | null }
-type Goal = { id: number; pair_id: number; owner_user_id: string; title: string; notes: string | null; status: 'not_started'|'in_progress'|'blocked'|'done'; progress: number }
-type Comment = { id: number; user_id: string; body: string; created_at: string }
-type UpdateRow = { id: number; goal_id: number; user_id: string; progress: number | null; body: string | null; created_at: string; goal_title: string }
+type UUID = string
 
-const STATUS_OPTIONS = [
+type Profile = { id: UUID; full_name: string | null; email: string | null }
+type GoalStatus = 'not_started'|'in_progress'|'blocked'|'done'
+type Goal = {
+  id: number; pair_id: number; owner_user_id: UUID;
+  title: string; notes: string | null; status: GoalStatus; progress: number
+}
+type Comment = { id: number; user_id: UUID; body: string; created_at: string }
+
+type PairMemberRPCRow = { user_id: UUID; full_name: string | null; email: string | null }
+
+type GoalUpdateJoinRow = {
+  id: number
+  goal_id: number
+  user_id: UUID
+  progress: number | null
+  body: string | null
+  created_at: string
+  goals: { id: number; title: string; pair_id: number } | null
+}
+
+type UpdateRow = {
+  id: number; goal_id: number; user_id: UUID; progress: number | null;
+  body: string | null; created_at: string; goal_title: string
+}
+
+const STATUS_OPTIONS: ReadonlyArray<{ value: GoalStatus; label: string }> = [
   { value: 'not_started', label: 'Not started' },
   { value: 'in_progress', label: 'In progress' },
   { value: 'blocked', label: 'Blocked' },
   { value: 'done', label: 'Done' },
-] as const
+]
+
+const toMessage = (err: unknown) =>
+  err instanceof Error ? err.message : typeof err === 'string' ? err : 'Something went wrong'
 
 export default function RoomPage() {
   const params = useParams<{ id: string }>()
@@ -45,56 +70,68 @@ export default function RoomPage() {
     let mounted = true
     const run = async () => {
       setErr(null)
-      const { data: { user } } = await supabase.auth.getUser()
+
+      const userRes = await supabase.auth.getUser()
+      const user = userRes.data.user
       if (!user) return router.replace('/login')
 
       // me
-      const { data: meRow } = await supabase
+      const meRes = await supabase
         .from('profiles')
         .select('id, full_name, email')
         .eq('id', user.id)
         .maybeSingle()
       if (!mounted) return
-      setMe(meRow as any)
+      if (meRes.error) setErr(toMessage(meRes.error))
+      const meRow: Profile | null = meRes.data
+        ? { id: meRes.data.id, full_name: meRes.data.full_name, email: meRes.data.email }
+        : null
+      setMe(meRow)
 
-      // secure fetch of both members (bypasses RLS but checks membership inside RPC)
-      const { data: mm } = await supabase
-        .rpc('get_pair_members_secure', { p_pair_id: pairId, uid: user.id })
+      // secure pair members
+      const pmRes = await supabase.rpc('get_pair_members_secure', { p_pair_id: pairId, uid: user.id })
       if (!mounted) return
-      setMembers((mm || []).map((r: any) => ({ id: r.user_id, full_name: r.full_name, email: r.email })))
+      if (pmRes.error) setErr(toMessage(pmRes.error))
+      const pmData = (pmRes.data ?? []) as PairMemberRPCRow[]
+      const pmList: Profile[] = pmData.map(r => ({ id: r.user_id, full_name: r.full_name, email: r.email }))
+      setMembers(pmList)
 
-      // goals (for both users, in this pair)
-      const { data: gs } = await supabase
+      // goals
+      const gRes = await supabase
         .from('goals')
         .select('id, pair_id, owner_user_id, title, notes, status, progress')
         .eq('pair_id', pairId)
         .order('id', { ascending: true })
-      if (!mounted) return
-      setGoals((gs || []) as any)
+      if (gRes.error) setErr(toMessage(gRes.error))
+      const gList: Goal[] = (gRes.data ?? []) as Goal[]
+      setGoals(gList)
 
       // comments
-      const { data: cs } = await supabase
+      const cRes = await supabase
         .from('comments')
         .select('id, user_id, body, created_at')
         .eq('pair_id', pairId)
         .order('created_at', { ascending: true })
-      if (!mounted) return
-      setComments((cs || []) as any)
+      if (cRes.error) setErr(toMessage(cRes.error))
+      const cList: Comment[] = (cRes.data ?? []) as Comment[]
+      setComments(cList)
 
-      // goal updates (our "check-ins")
+      // goal updates
       await loadUpdates(pairId)
 
       setLoading(false)
     }
 
     const loadUpdates = async (pid: number) => {
-      const { data } = await supabase
+      const uRes = await supabase
         .from('goal_updates')
         .select('id, goal_id, user_id, progress, body, created_at, goals!inner(id, title, pair_id)')
         .eq('goals.pair_id', pid)
         .order('created_at', { ascending: false })
         .limit(20)
-      const mapped = (data || []).map((r: any) => ({
+      if (uRes.error) setErr(toMessage(uRes.error))
+      const rows = (uRes.data ?? []) as GoalUpdateJoinRow[]
+      const mapped: UpdateRow[] = rows.map(r => ({
         id: r.id,
         goal_id: r.goal_id,
         user_id: r.user_id,
@@ -102,7 +139,7 @@ export default function RoomPage() {
         body: r.body,
         created_at: r.created_at,
         goal_title: r.goals?.title ?? '(goal)'
-      })) as UpdateRow[]
+      }))
       setUpdates(mapped)
     }
 
@@ -111,33 +148,50 @@ export default function RoomPage() {
   }, [pairId, router])
 
   // helpers
-  const partner = useMemo(() => members.find(m => m.id !== me?.id) || null, [members, me])
-  const myGoals = useMemo(() => goals.filter(g => g.owner_user_id === me?.id), [goals, me])
-  const partnerGoals = useMemo(() => goals.filter(g => g.owner_user_id !== me?.id), [goals, me])
-  const nameOf = (uid: string) => members.find(m => m.id === uid)?.full_name || members.find(m => m.id === uid)?.email || 'Member'
+  const partner = useMemo(
+    () => members.find(m => m.id !== me?.id) || null,
+    [members, me]
+  )
+  const myGoals = useMemo(
+    () => goals.filter(g => g.owner_user_id === me?.id),
+    [goals, me]
+  )
+  const partnerGoals = useMemo(
+    () => goals.filter(g => g.owner_user_id !== me?.id),
+    [goals, me]
+  )
+  const nameOf = (uid: UUID) => {
+    const m = members.find(x => x.id === uid)
+    return m?.full_name || m?.email || 'Member'
+  }
 
   useEffect(() => {
-    // choose default selected goal (first of my goals)
-    if (myGoals.length && selectedGoalId == null) setSelectedGoalId(myGoals[0].id)
+    if (myGoals.length && selectedGoalId == null) {
+      setSelectedGoalId(myGoals[0].id)
+    }
   }, [myGoals, selectedGoalId])
 
   const reloadGoals = async () => {
-    const { data: gs } = await supabase
+    const gRes = await supabase
       .from('goals')
       .select('id, pair_id, owner_user_id, title, notes, status, progress')
       .eq('pair_id', pairId)
       .order('id', { ascending: true })
-    setGoals((gs || []) as any)
+    if (gRes.error) setErr(toMessage(gRes.error))
+    const gList: Goal[] = (gRes.data ?? []) as Goal[]
+    setGoals(gList)
   }
 
   const reloadUpdates = async () => {
-    const { data } = await supabase
+    const uRes = await supabase
       .from('goal_updates')
       .select('id, goal_id, user_id, progress, body, created_at, goals!inner(id, title, pair_id)')
       .eq('goals.pair_id', pairId)
       .order('created_at', { ascending: false })
       .limit(20)
-    const mapped = (data || []).map((r: any) => ({
+    if (uRes.error) setErr(toMessage(uRes.error))
+    const rows = (uRes.data ?? []) as GoalUpdateJoinRow[]
+    const mapped: UpdateRow[] = rows.map(r => ({
       id: r.id,
       goal_id: r.goal_id,
       user_id: r.user_id,
@@ -145,67 +199,71 @@ export default function RoomPage() {
       body: r.body,
       created_at: r.created_at,
       goal_title: r.goals?.title ?? '(goal)'
-    })) as UpdateRow[]
+    }))
     setUpdates(mapped)
   }
 
   // ----- actions -----
   const addGoal = async () => {
     if (!title.trim()) return
-    const { data: { user } } = await supabase.auth.getUser()
-    const { error } = await supabase.from('goals').insert({
+    const userRes = await supabase.auth.getUser()
+    const user = userRes.data.user
+    if (!user) { setErr('Not signed in'); return }
+    const ins = await supabase.from('goals').insert({
       pair_id: pairId,
-      owner_user_id: user!.id,
+      owner_user_id: user.id,
       title: title.trim(),
       notes: notes.trim() || null
     })
-    if (error) { setErr(error.message); return }
+    if (ins.error) { setErr(toMessage(ins.error)); return }
     setTitle(''); setNotes('')
     await reloadGoals()
   }
 
   const updateGoal = async (goalId: number, patch: Partial<Goal>) => {
-    const { error } = await supabase.from('goals').update(patch).eq('id', goalId)
-    if (error) { setErr(error.message); return }
+    const upd = await supabase.from('goals').update(patch).eq('id', goalId)
+    if (upd.error) { setErr(toMessage(upd.error)); return }
     await reloadGoals()
   }
 
   const addComment = async () => {
     if (!commentText.trim()) return
-    const { data: { user } } = await supabase.auth.getUser()
-    const { error } = await supabase.from('comments').insert({
+    const userRes = await supabase.auth.getUser()
+    const user = userRes.data.user
+    if (!user) { setErr('Not signed in'); return }
+    const ins = await supabase.from('comments').insert({
       pair_id: pairId,
-      user_id: user!.id,
+      user_id: user.id,
       body: commentText.trim()
     })
-    if (error) { setErr(error.message); return }
+    if (ins.error) { setErr(toMessage(ins.error)); return }
     setCommentText('')
-    const { data: cs } = await supabase
+    const cRes = await supabase
       .from('comments')
       .select('id, user_id, body, created_at')
       .eq('pair_id', pairId)
       .order('created_at', { ascending: true })
-    setComments((cs || []) as any)
+    if (cRes.error) { setErr(toMessage(cRes.error)); return }
+    const cList: Comment[] = (cRes.data ?? []) as Comment[]
+    setComments(cList)
   }
 
-  // New: goal-based check-in (writes to goal_updates and syncs the goal's progress)
   const submitGoalCheckin = async () => {
     if (!selectedGoalId) { setErr('Pick one of your goals first.'); return }
-    const { data: { user } } = await supabase.auth.getUser()
-    const gid = selectedGoalId
+    const userRes = await supabase.auth.getUser()
+    const user = userRes.data.user
+    if (!user) { setErr('Not signed in'); return }
 
-    // 1) create goal_update
-    const { error: e1 } = await supabase.from('goal_updates').insert({
-      goal_id: gid,
-      user_id: user!.id,
+    const ins1 = await supabase.from('goal_updates').insert({
+      goal_id: selectedGoalId,
+      user_id: user.id,
       progress: checkProgress,
       body: checkNote || null
     })
-    if (e1) { setErr(e1.message); return }
+    if (ins1.error) { setErr(toMessage(ins1.error)); return }
 
-    // 2) also update the goal progress itself
-    const { error: e2 } = await supabase.from('goals').update({ progress: checkProgress }).eq('id', gid)
-    if (e2) { setErr(e2.message); return }
+    const upd = await supabase.from('goals').update({ progress: checkProgress }).eq('id', selectedGoalId)
+    if (upd.error) { setErr(toMessage(upd.error)); return }
 
     setCheckNote('')
     await reloadGoals()
@@ -255,7 +313,7 @@ export default function RoomPage() {
           <h2 className="font-medium mb-2">Partner’s Goals</h2>
           <div className="space-y-2">
             {partnerGoals.map(g => (
-              <GoalRow key={g.id} goal={g} canEdit={false} onChange={() => {}} />
+              <GoalRow key={g.id} goal={g} canEdit={false} onChange={() => Promise.resolve()} />
             ))}
             {partnerGoals.length === 0 && <p className="text-gray-500">Partner has no goals yet.</p>}
           </div>
@@ -354,7 +412,7 @@ function GoalRow({ goal, canEdit, onChange }: {
           <input
             type="range" min={0} max={100}
             value={goal.progress}
-            onChange={(e) => canEdit && onChange(goal.id, { progress: Number(e.target.value) })}
+            onChange={(e) => canEdit ? onChange(goal.id, { progress: Number(e.target.value) }) : Promise.resolve()}
             className="w-full"
             disabled={!canEdit}
           />
@@ -364,7 +422,7 @@ function GoalRow({ goal, canEdit, onChange }: {
         <select
           className="rounded-xl border px-2 py-1 text-sm"
           value={goal.status}
-          onChange={(e) => canEdit && onChange(goal.id, { status: e.target.value as Goal['status'] })}
+          onChange={(e) => canEdit ? onChange(goal.id, { status: e.target.value as GoalStatus }) : Promise.resolve()}
           disabled={!canEdit}
         >
           {STATUS_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
@@ -374,8 +432,8 @@ function GoalRow({ goal, canEdit, onChange }: {
   )
 }
 
-function StatusBadge({ value }: { value: Goal['status'] }) {
-  const map: Record<Goal['status'], string> = {
+function StatusBadge({ value }: { value: GoalStatus }) {
+  const map: Record<GoalStatus, string> = {
     not_started: 'bg-gray-100 text-gray-800',
     in_progress: 'bg-blue-100 text-blue-800',
     blocked: 'bg-amber-100 text-amber-800',
