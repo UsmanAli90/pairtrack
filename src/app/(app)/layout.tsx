@@ -21,6 +21,7 @@ export default function AppGroupLayout({ children }: { children: ReactNode }) {
         <nav className="sticky top-0 z-10 bg-white/70 backdrop-blur border-b">
           <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
             <div className="font-semibold">PairTrack</div>
+            <div className="font-semibold">Made by Osman</div>
             <button
               onClick={signOut}
               disabled={signingOut}
