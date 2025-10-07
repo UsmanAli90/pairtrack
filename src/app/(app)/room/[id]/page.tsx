@@ -298,12 +298,12 @@ export default function RoomPage() {
             <input
               value={title} onChange={e => setTitle(e.target.value)}
               placeholder="New goal title"
-              className="w-full rounded-xl border px-3 py-2"
+              className="w-full rounded-2xl border px-3 py-2"
             />
             <textarea
               value={notes} onChange={e => setNotes(e.target.value)}
               placeholder="Notes (optional)"
-              className="w-full rounded-xl border px-3 py-2"
+              className="w-full rounded-2xl border px-3 py-2"
             />
             <button onClick={addGoal} className="rounded-xl px-3 py-2 bg-gray-900 text-white">Add Goal</button>
           </div>
@@ -333,7 +333,7 @@ export default function RoomPage() {
               <select
                 value={selectedGoalId ?? ''}
                 onChange={e => setSelectedGoalId(Number(e.target.value))}
-                className="w-full rounded-xl border px-3 py-2 bg-white"
+                className="w-full rounded-2xl border px-3 py-2 bg-white"
               >
                 {myGoals.map(g => <option key={g.id} value={g.id}>{g.title}</option>)}
               </select>
@@ -349,7 +349,7 @@ export default function RoomPage() {
               <input
                 value={checkNote} onChange={e => setCheckNote(e.target.value)}
                 placeholder="Quick note (optional)"
-                className="w-full rounded-xl border px-3 py-2 mt-2"
+                className="w-full rounded-2xl border px-3 py-2 mt-2"
               />
 
               <button onClick={submitGoalCheckin} className="mt-2 rounded-xl px-3 py-2 bg-gray-900 text-white">
@@ -360,7 +360,7 @@ export default function RoomPage() {
 
           <ul className="mt-4 space-y-2">
             {updates.map(u => (
-              <li key={u.id} className="rounded-xl border px-3 py-2 text-sm">
+              <li key={u.id} className="rounded-2xl border px-3 py-2 text-sm">
                 <div className="text-gray-600">
                   {nameOf(u.user_id)} • {u.goal_title} • {typeof u.progress === 'number' ? `${u.progress}%` : '—'} • {new Date(u.created_at).toLocaleString()}
                 </div>
@@ -377,13 +377,13 @@ export default function RoomPage() {
             <input
               value={commentText} onChange={e => setCommentText(e.target.value)}
               placeholder="Write an update or question…"
-              className="flex-1 rounded-xl border px-3 py-2"
+              className="flex-1 rounded-2xl border px-3 py-2"
             />
             <button onClick={addComment} className="rounded-xl px-3 py-2 bg-gray-900 text-white">Send</button>
           </div>
           <ul className="mt-3 space-y-2">
             {comments.map(c => (
-              <li key={c.id} className="rounded-xl border px-3 py-2">
+              <li key={c.id} className="rounded-2xl border px-3 py-2">
                 <div className="text-xs text-gray-500">{nameOf(c.user_id)} • {new Date(c.created_at).toLocaleString()}</div>
                 <div className="text-gray-800">{c.body}</div>
               </li>
@@ -420,7 +420,7 @@ function GoalRow({ goal, canEdit, onChange }: {
         <div className="w-12 text-right text-sm text-gray-700">{goal.progress}%</div>
 
         <select
-          className="rounded-xl border px-2 py-1 text-sm"
+          className="rounded-2xl border px-2 py-1 text-sm"
           value={goal.status}
           onChange={(e) => canEdit ? onChange(goal.id, { status: e.target.value as GoalStatus }) : Promise.resolve()}
           disabled={!canEdit}

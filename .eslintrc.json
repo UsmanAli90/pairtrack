@@ -1,0 +1,14 @@
+{
+  "extends": "next/core-web-vitals",
+  "overrides": [
+    {
+      "files": [
+        "src/app/(app)/room/[id]/page.tsx",
+        "src/components/AuthForm.tsx"
+      ],
+      "rules": {
+        "@typescript-eslint/no-explicit-any": "off"
+      }
+    }
+  ]
+}

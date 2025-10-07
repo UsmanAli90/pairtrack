@@ -19,7 +19,6 @@ type FormValues = z.infer<typeof schema>
 const toMessage = (err: unknown) =>
   err instanceof Error ? err.message : typeof err === 'string' ? err : 'Something went wrong'
 
-// 👇 supports /login and /signup pages
 export default function AuthForm({ defaultMode = 'login' }: { defaultMode?: 'login' | 'signup' }) {
   const router = useRouter()
   const [submitting, setSubmitting] = useState(false)
@@ -100,7 +99,6 @@ export default function AuthForm({ defaultMode = 'login' }: { defaultMode?: 'log
     <div className="w-full max-w-md mx-auto bg-white/70 backdrop-blur rounded-2xl p-6 shadow-sm border border-gray-100">
       <h1 className="text-2xl font-semibold mb-4 text-gray-900 text-center">Welcome to PairTrack</h1>
 
-      {/* Segmented control */}
       <div className="flex gap-2 mb-4">
         <button
           type="button"
@@ -122,7 +120,6 @@ export default function AuthForm({ defaultMode = 'login' }: { defaultMode?: 'log
         </button>
       </div>
 
-      {/* Hidden input so RHF keeps the value */}
       <input type="hidden" {...register('mode')} />
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
